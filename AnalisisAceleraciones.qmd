@@ -1,0 +1,987 @@
+---
+title: "Análisis De Aceleraciones II"
+format:
+  html:
+    toc: true
+    self-contained: true
+    code-fold: false
+    code-overflow: wrap
+    lang: es
+editor: visual
+author:
+  - Jeronimo Ledesma Patino, jledesmap@unal.edu.co
+  - Jose David Gallego Zapata, jogallegoz@unal.edu.co
+  - Jessica Paola Vega Alvarado, jevegaa@unal.edu.co 
+  - Julian Esteban Fernandez Montoya, jfernandezmo@unal.edu.co
+---
+
+## Introducción:
+
+El análisis de datos provenientes de sensores en dispositivos móviles permite inferir patrones de comportamiento en contextos reales de forma no intrusiva. Este trabajo se centra en el uso de datos de aceleración, recolectados mediante los acelerómetros integrados en teléfonos celulares, para reconstruir trayectorias y actividades cotidianas de usuarios en entornos urbanos.
+
+La información fue registrada por los propios integrantes del equipo durante sesiones de aproximadamente una hora, en las que se realizaron actividades comunes como caminar o utilizar medios de transporte público. A partir del análisis temporal de los patrones de aceleración se buscará identificar los distintos modos de desplazamiento y estimar la duración de cada actividad sin recurrir al testimonio directo del usuario.
+
+El objetivo es evidenciar la utilidad de los datos generados por dispositivos móviles en segundo plano, y su aplicabilidad en estudios y sistemas de monitoreo.
+
+## Metodología:
+
+**Metodología**
+
+1.  **Captura de datos**
+
+    -   Los integrantes emplearon la aplicación *Arduino Journal* para registrar la aceleración lineal (ejes X, Y, Z) de sus celulares en intervalos definidos.
+
+    -   Exportación en formato `.csv` con columnas: `timestamp`, `LinearAccelerometerSensor`, `AccX`, `AccY`, `AccZ`.
+
+2.  **Validación y preprocesamiento**
+
+    -   Cálculo de porcentaje de valores nulos.
+
+    -   Verificación y corrección de tipos de variables.
+
+    -   Verificación de tiempos de captura de datos.
+
+    -   Conversión de `timestamp` a formato de fecha y hora legible.
+
+    -   Calculo de la magnitud de aceleración total, basada en sus componentes X, Y, Z.
+
+3.  **Análisis descriptivo**
+
+    -   Resumen estadístico básico (media, mediana, desviación estándar).
+
+    -   Gráficos de cada variable vs. tiempo.
+
+    -   Identificación visual de patrones de movimiento.
+
+4.  **Detección automática de cambios**\
+    Se aplicó una función heuristica basada en los datos de media y desviación estandar para clasificar los tipos de actividades teniendo en cuenta su naturaleza dentro de la señal.
+
+## Análisis Descriptivo:
+
+### Instalación y Carga De Librerías:
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+# Carga librerias
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(tibble)
+library(zoo)
+library(depmixS4)
+library(solitude)
+library(isotree)
+```
+
+### Lectura De Datos
+
+Cada archivo CSV corresponde a una sesión de recolección de datos de aproximadamente una hora, en la que se registró el movimiento de un dispositivo móvil mediante sus sensores de aceleración. Cada sesión se carga en un DataFrame cuyas columnas son:
+
+-   **AccX, AccY, AccZ**: las componentes de la aceleración en los ejes X, Y y Z, respectivamente, expresadas en metros por segundo al cuadrado (m/s²). Estas mediciones capturan las variaciones de velocidad del dispositivo en cada una de las tres dimensiones del espacio.
+
+-   **timestamp**: el instante de tiempo en que se registró cada muestra, dado en milisegundos desde el 1 de enero de 1970 (época Unix).
+
+```{r}
+#| include: false
+
+# Importar los archivos CSV
+aceleracion_1 <- read.csv("aceleracion_1.csv")
+aceleracion_2 <- read.csv("aceleracion_2.csv")
+```
+
+```{r}
+#| echo: false
+
+# Imprimir las tablas
+kable(head(aceleracion_1, 5), caption = "Primeras 10 filas del dataset Aceleración 1")
+
+kable(head(aceleracion_2, 5), caption = "Primeras 10 filas del dataset Aceleración 2")
+```
+
+A partir de la revisión inicial de los datos, se identificaron las siguientes observaciones relevantes:
+
+-   Todos los dataframes presentan una estructura uniforme, con las mismas columnas y tipos de variables, lo cual facilita su comparación y análisis conjunto.
+
+-   Las variables contenidas en los archivos son de tipo numérico, lo que permite aplicar directamente técnicas estadísticas y modelos cuantitativos sin necesidad de conversión previa.
+
+### Preprocesamiento De Datos:
+
+#### Verificación De Valores Nulos:
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Calcular el porcentaje de NA por columna
+faltantes <- aceleracion_1 %>%
+  summarise(across(everything(), ~mean(is.na(.)) * 100))
+
+# Mostrar como tabla
+kable(faltantes, caption = "Porcentaje de NA por columna en el dataset Aceleración 1", digits = 2)
+
+
+# Calcular el porcentaje de NA por columna
+faltantes <- aceleracion_2 %>%
+  summarise(across(everything(), ~mean(is.na(.)) * 100))
+
+# Mostrar como tabla
+kable(faltantes, caption = "Porcentaje de NA por columna en el dataset Aceleración 2", digits = 2)
+
+```
+
+La revisión de los datos indica que no existen valores faltantes (`NA`) en ninguna de las columnas de los DataFrame analizados. Esto garantiza la integridad de la información y permite avanzar en el análisis sin necesidad de aplicar técnicas de imputación o depuración por este motivo.
+
+#### Verificación De Tiempos De Captura De Datos:
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+# Calcular diferencias entre timestamps consecutivos (en milisegundos)
+intervalos <- diff(aceleracion_1$timestamp)
+
+# Convertir a segundos si prefieres
+intervalos_seg <- intervalos / 1000
+
+# Graficar histograma de los intervalos
+hist(intervalos_seg,
+     breaks = 50,
+     main = "Histograma de intervalos entre capturas",
+     xlab = "Intervalo de tiempo (segundos)",
+     ylab = "Frecuencia",
+     col = "steelblue",
+     border = "white")
+
+```
+
+El histograma muestra que los intervalos entre capturas son muy consistentes, concentrados alrededor de 0.067 segundos. Esto indica que el sensor registró los datos con una frecuencia estable de aproximadamente 15 tomas por segundo, sin interrupciones ni variaciones significativas en el tiempo de muestreo, el equipo de trabajo ha decidido que la **toma de datos puede considerarse periódica**, lo cual tendrá implicaciones en análisis posteriores.
+
+#### Creación De Variable Fecha y AccMag:
+
+Se definió una función de preprocesamiento que enriquece el conjunto de datos, calculando la magnitud total de la aceleración a partir de sus componentes (AccX, AccY, AccZ) y añadiendo una columna que convierte la marca temporal (`timestamp`) a un formato de fecha y hora legible.
+
+```{r}
+#| echo: true
+#| message: false
+#| warning: false
+
+procesar_aceleracion <- function(df) {
+  
+  # Calcular la magnitud de la aceleracion y agregar la columna AccMag
+  df$AccMag <- sqrt(df$AccX^2 + df$AccY^2 + df$AccZ^2)
+  
+  # Calcular la fecha a partir de la columna timestamp
+  df$Fecha <- as.POSIXct(df$timestamp / 1000, origin = '1970-01-01', tz = 'UTC')
+  
+  # Devolver el dataframe modificado
+  return(df)
+}
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+aceleracion_1 <- procesar_aceleracion(aceleracion_1)
+aceleracion_2 <- procesar_aceleracion(aceleracion_2)
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: true
+
+# Imprimir tabla preprocesada de ejemplo
+kable(head(aceleracion_1, 5), caption = "Primeras 10 filas del dataset Aceleración 1")
+```
+
+### Gráficos De Séries De Tiempo
+
+En esta sección se muestran gráficamente las series temporales de aceleración registradas por los sensores de los dispositivos móviles. Las gráficas incluyen las componentes en los ejes X, Y y Z, así como la magnitud total de la aceleración (AccMag).
+
+Estas representaciones permiten observar la evolución del movimiento a lo largo del tiempo, facilitando la identificación de patrones, variaciones en la intensidad del movimiento y posibles transiciones entre diferentes actividades físicas realizadas por el usuario.
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+# Funcion que dado un df devuelve los graficos de series de tiempo de las aceleraciones por componente.
+
+graficar_componentes <- function(df) {
+  # Guardar parámetros gráficos originales
+  op <- par(mfrow = c(3, 1),        # 3 filas, 1 columna
+            mar   = c(1, 2, 4, 2))  # márgenes (abajo, izquierda, arriba, derecha)
+
+  # Calcular rango común en X y ticks de hora
+  fechas <- range(df$Fecha, na.rm = TRUE)
+  ticks  <- seq(fechas[1], fechas[2], length.out = 5)
+
+  # --- AccX ---
+  ylim_x <- range(df$AccX, na.rm = TRUE)
+  plot(NA, NA,
+       xlim = fechas, ylim = ylim_x,
+       type = "n", xaxt = "n",
+       xlab = "Hora", ylab = "AccX (m/s2)",
+       main = "Aceleracion en el eje X")
+  axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+  lines(df$Fecha, df$AccX, col = "blue", lwd = 2)
+
+  # --- AccY ---
+  ylim_y <- range(df$AccY, na.rm = TRUE)
+  plot(NA, NA,
+       xlim = fechas, ylim = ylim_y,
+       type = "n", xaxt = "n",
+       xlab = "Hora", ylab = "AccY (m/s2)",
+       main = "Aceleracion en el eje Y")
+  axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+  lines(df$Fecha, df$AccY, col = "red", lwd = 2)
+
+  # --- AccZ ---
+  ylim_z <- range(df$AccZ, na.rm = TRUE)
+  plot(NA, NA,
+       xlim = fechas, ylim = ylim_z,
+       type = "n", xaxt = "n",
+       xlab = "Hora", ylab = "AccZ (m/s2)",
+       main = "Aceleracion en el eje Z")
+  axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+  lines(df$Fecha, df$AccZ, col = "green", lwd = 2)
+
+  # Restaurar parametros originales
+  par(op)
+}
+
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+# Funcion que dado un df devuelve los graficos de series de tiempo de los datos de Linear Accelerometer y la magnitud de la aceleracion calculada.
+
+graficar_totales <- function(df) {
+  # Guardar parametros graficos originales
+  op <- par(mfrow = c(2, 1),       # 2 filas, 1 columna
+            mar   = c(1, 2, 4, 2)) # márgenes (abajo, izquierda, arriba, derecha)
+
+  # Rango completo de fechas para ambos gráficos
+  fechas <- range(df$Fecha, na.rm = TRUE)
+  # Ticks equidistantes en el eje X
+  ticks <- seq(fechas[1], fechas[2], length.out = 5)
+
+  # --- Grafico 1: Magnitud de aceleración ---
+  ylim1 <- range(df$AccMag, na.rm = TRUE)
+  plot(NA, NA,
+       xlim = fechas, ylim = ylim1,
+       type = "n", xaxt = "n",
+       xlab = "Hora",
+       ylab = "Acc. Total (m/s2)",
+       main = "Magnitud de la aceleracion")
+  axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+  lines(df$Fecha, df$AccMag, col = "purple", lwd = 2)
+
+  # --- Gráfico 2: Sensor lineal ---
+  ylim2 <- range(df$LinearAccelerometerSensor, na.rm = TRUE)
+  plot(NA, NA,
+       xlim = fechas, ylim = ylim2,
+       type = "n", xaxt = "n",
+       xlab = "Hora",
+       ylab = "Sensor (m/s2)",
+       main = "Linear Accelerometer Sensor")
+  axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+  lines(df$Fecha, df$LinearAccelerometerSensor, col = "orange", lwd = 2)
+
+  # Restaurar parametros originales
+  par(op)
+}
+
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+# Vector con los nombres de los dataframes
+dfs <- paste0("aceleracion_", 1:2)
+
+# Recorrer cada nombre, obtener el df, y graficar con titulo propio
+for (df_name in dfs) {
+  # Obtener el objeto data.frame a partir de su nombre
+  df <- get(df_name)
+  
+  # Preparar margen exterior para el título principal
+  par(oma = c(2, 0, 2, 0))       # margen superior extra
+  
+  # Llamar a la función de graficado (3 plots verticales)
+  graficar_componentes(df)
+  
+  # Añadir el nombre del data.frame como título general
+  mtext(df_name, outer = TRUE, line = 0, cex = 1.2)
+}
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+# Vector con los nombres de los data.frames
+dfs <- paste0("aceleracion_", 1:2)
+
+# Recorrer cada nombre, obtener el df, y graficar con título propio
+for (df_name in dfs) {
+  # Obtener el objeto data.frame a partir de su nombre
+  df <- get(df_name)
+  
+  # Preparar margen exterior para el título principal
+  par(oma = c(2, 0, 2, 0))       # margen superior extra
+  
+  # Llamar a la función de graficado de totales (2 plots verticales)
+  graficar_totales(df)
+  
+  # Añadir el nombre del data.frame como título general
+  mtext(df_name, outer = TRUE, line = 0, cex = 1.2)
+}
+
+```
+
+### Identificación Visual De Patrones:
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+Graficar_un_intervalo <- function(dataframe, col_name, inicio_min, fin_min) {
+  # Obtener la fecha de inicio del dataframe
+  fecha_inicio <- min(dataframe$Fecha)
+
+  # Calcular los límites del intervalo en formato POSIX
+  fecha_inicio_intervalo <- fecha_inicio + inicio_min * 60
+  fecha_fin_intervalo    <- fecha_inicio + fin_min * 60
+
+  # Filtrar el subconjunto de datos
+  subset <- dataframe[dataframe$Fecha >= fecha_inicio_intervalo &
+                      dataframe$Fecha <= fecha_fin_intervalo, ]
+
+  # Establecer límites fijos en el eje Y
+  ylim_vals <- c(0, 25)
+
+  # Crear el gráfico vacío con eje X personalizado
+  plot(NA, NA,
+       xlim = c(fecha_inicio_intervalo, fecha_fin_intervalo),
+       ylim = ylim_vals,
+       xlab = "Hora",
+       ylab = paste("Aceleración en", col_name, "(m/s²)"),
+       main = paste("Componente", col_name, "| Minuto", inicio_min, "a", fin_min),
+       xaxt = "n")
+
+  # Crear ticks equidistantes en el intervalo y mostrar solo la hora
+  ticks <- seq(fecha_inicio_intervalo, fecha_fin_intervalo, length.out = 5)
+  axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+
+  # Añadir la línea sólo si hay datos en el subset
+  if (nrow(subset) > 0) {
+    lines(subset$Fecha, subset[[col_name]], col = "green", lwd = 2)
+  }
+}
+
+
+```
+
+Al analizar los gráficos de aceleración a lo largo del tiempo, se pueden identificar cuatro tipos principales de comportamiento, que reflejan distintos tipos de movimiento:
+
+1.  **Perí­odos de aceleración constante o nula** Secciones donde las lí­neas de aceleración permanecen cercanas a un valor constante durante periodos prolongados, sin fluctuaciones significativas.
+
+    ```{r}
+    #| echo: false
+    #| message: false
+    #| warning: false
+
+    Graficar_un_intervalo(aceleracion_2, "AccZ", 10, 11)
+    ```
+
+2.  **Aceleración oscilatoria de ritmo rápido** Segmentos caracterizados por variaciones frecuentes y regulares en los valores de aceleración, con un patrón ondulado de corta duración entre picos.
+
+    ```{r}
+    #| echo: false
+    #| message: false
+    #| warning: false
+
+    Graficar_un_intervalo(aceleracion_2, "AccZ", 0, 1)
+    ```
+
+3.  **Cambios progresivos y bruscos en la aceleración**\
+    Tramos que inician con cambios graduales en la aceleración y luego presentan aumentos o caí­das súbitas, generando rupturas marcadas en la continuidad del gráfico.
+
+    ```{r}
+    #| echo: false
+    #| message: false
+    #| warning: false
+
+    Graficar_un_intervalo(aceleracion_2, "AccZ", 25, 28)
+    ```
+
+    ```{r}
+
+    Graficar_un_intervalo <- function(dataframe, col_name, inicio_min, fin_min, actividad = "") {
+      # Obtener la fecha de inicio del dataframe
+      fecha_inicio <- min(dataframe$Fecha)
+
+      # Calcular los límites del intervalo en formato POSIX
+      fecha_inicio_intervalo <- fecha_inicio + inicio_min * 60
+      fecha_fin_intervalo    <- fecha_inicio + fin_min * 60
+
+      # Filtrar el subconjunto de datos
+      subset <- dataframe[dataframe$Fecha >= fecha_inicio_intervalo &
+                            dataframe$Fecha <= fecha_fin_intervalo, ]
+
+      # Establecer límites fijos en el eje Y
+      ylim_vals <- c(0, 25)
+
+      # Crear el gráfico vacío con eje X personalizado
+      plot(NA, NA,
+           xlim = c(fecha_inicio_intervalo, fecha_fin_intervalo),
+           ylim = ylim_vals,
+           xlab = "Hora",
+           ylab = paste("Aceleración en", col_name, "(m/s²)"),
+           main = paste(actividad, "|", "Min", inicio_min, "a", fin_min),
+           xaxt = "n")
+
+      # Crear ticks equidistantes en el intervalo y mostrar solo la hora
+      ticks <- seq(fecha_inicio_intervalo, fecha_fin_intervalo, length.out = 5)
+      axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+
+      # Añadir la línea solo si hay datos
+      if (nrow(subset) > 0) {
+        lines(subset$Fecha, subset[[col_name]], col = "blue", lwd = 2)
+      }
+    }
+
+    # Nueva función para mostrar tres gráficos en una misma figura
+    Graficar_tres_intervalos <- function(dataframe) {
+      par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))  # 1 fila, 3 columnas, márgenes ajustados
+      
+      Graficar_un_intervalo(dataframe, "AccMag", 10, 11, "Reposo")
+      Graficar_un_intervalo(dataframe, "AccMag", 0, 1, "Caminar")
+      Graficar_un_intervalo(dataframe, "AccMag", 25, 28, "Viaje en bus")
+      
+      par(mfrow = c(1, 1))  # Restaurar configuración por defecto
+    }
+
+    Graficar_tres_intervalos(aceleracion_2)
+    ```
+
+La identificación visual de los patrones de aceleración resulta especialmente relevante, al facilitar la asociación con las distintas formas de desplazamiento registradas durante el estudio. En secciones posteriores, se analizará en detalle su correspondencia con los medios de transporte utilizados por los sujetos del experimento.
+
+### Estadísticos Descriptivos:
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+
+library(ggplot2)
+
+graficar_media_sd <- function(data, columna, ventana = 100) {
+
+  # Calcular media y desviación estándar por ventana
+  resumen <- data %>%
+    mutate(index = row_number()) %>%
+    group_by(grupo = floor((index - 1) / ventana)) %>%
+    summarise(
+      tiempo = Fecha[ceiling(n()/2)],
+      media = mean(.data[[columna]], na.rm = TRUE),
+      sd = sd(.data[[columna]], na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Graficar
+  ggplot(resumen, aes(x = tiempo, y = media)) +
+    geom_line(color = "blue") +
+    geom_ribbon(aes(ymin = media - sd, ymax = media + sd), alpha = 0.4, fill = "lightblue") +
+    scale_x_datetime(date_labels = "%H:%M", date_breaks = "10 min") +
+    labs(
+      title = paste("Media y Desviación Estándar de", columna, "a través del tiempo"),
+      x = "Hora",
+      y = columna
+    ) +
+    theme_minimal()
+}
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+graficar_media_sd(aceleracion_1, "AccMag", ventana = 50)
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+graficar_media_sd(aceleracion_2, "AccMag", ventana = 50)
+```
+
+-   En los estadísticos descriptivos de las variables se observa una amplia variabilidad en los valores mínimos y máximos de los componentes de aceleración, lo cual es indicativo de diferentes tipos de movimientos o interacciones físicas.
+
+-   El rango de valores registrados sugiere que los dispositivos han estado expuestos tanto a movimientos leves como a aceleraciones significativas, posiblemente por manipulación manual, desplazamientos o sacudidas.
+
+-   La variable AccMag, que representa la magnitud total del vector de aceleración, calculada a partir de las componentes AccX, AccY y AccZ mediante el teorema de Pitágoras; mantiene en todos los conjuntos de datos, un valor medio que se aproxima consistentemente a 9.8-10 m/s², lo cual coincide con la aceleración gravitacional de la Tierra (9.81 m/s²). Este comportamiento es esperado, ya que incluso cuando el dispositivo está en reposo, los acelerómetros registran la aceleración debida a la gravedad, siendo esta una fuerza que está presente en todo momento.
+
+### Inferencia De Actividades:
+
+Los datos corresponden a las actividades de cuatro personas, de las cuales dos realizan acciones de manera individual y las otras dos en conjunto, en intervalos de tiempo de aproximadamente una hora. En términos generales, las actividades se caracterizan por desplazamientos entre distintos lugares utilizando diversos medios de transporte, así como por períodos de reposo.
+
+**Características de cada Actividad:**
+
+-   **Caminar:** Se caracteriza por variaciones rápidas y continuas de la aceleración en los tres ejes. Los movimientos son irregulares pero repetitivos, con oscilaciones en torno al eje base.
+
+-   **Estar Quieto o Movimiento Constante:** Aceleración muy baja o prácticamente constante. Las líneas tienden a permanecer cerca de cero, indicando ausencia de movimiento significativo.
+
+-   **Desplazarse En Un Vehículo:** Aceleración estable en general, pero con algunos picos pronunciados debido a cambios bruscos (frenadas, curvas). Las oscilaciones son menos frecuentes y más moderadas que al caminar.
+
+-   **Desplazarse En Metro:** La aceleración presenta fases bien definidas: picos moderados al iniciar o detenerse, seguidos de periodos largos de estabilidad durante el trayecto. Las líneas muestran patrones suaves y constantes, con ligeras vibraciones en un eje dominante (dependiendo de la orientación del tren). A diferencia del bus, los cambios son más regulares y menos abruptos, reflejando un movimiento fluido y controlado sobre los rieles.
+
+#### Método Visual:
+
+Se programó una función similar a la utilizada previamente para el análisis de patrones de aceleración, pero en este caso permite visualizar de forma conjunta el comportamiento de una de las componentes de aceleración: X, Y, Z a lo largo de distintos intervalos de tiempo definidos, facilitando la comparación entre segmentos y la identificación de variaciones asociadas a distintas actividades.
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+Graficar_intervalos <- function(dataframe, col_name, intervalos) {
+  # Obtener la fecha de inicio del dataframe
+  fecha_inicio <- min(dataframe$Fecha)
+  
+  # Layout fijo de 2 columnas
+  columnas <- 2
+  filas    <- ceiling(length(intervalos) / columnas)
+  par(mfrow = c(filas, columnas), mar = c(2, 2, 2, 2), oma = c(0, 0, 3, 0))  # oma para espacio del título
+  
+  for (intervalo in intervalos) {
+    # Calcular fechas de inicio y fin del intervalo (en segundos)
+    fecha_inicio_intervalo <- fecha_inicio + intervalo[1] * 60
+    fecha_fin_intervalo    <- fecha_inicio + intervalo[2] * 60
+    
+    # Filtrar los datos del intervalo
+    subset <- dataframe[dataframe$Fecha >= fecha_inicio_intervalo &
+                        dataframe$Fecha <= fecha_fin_intervalo, ]
+    
+    # Rango Y basado en todos los datos de la columna
+    ylim_vals <- range(dataframe[[col_name]], na.rm = TRUE)
+    
+    # Gráfico vacío con eje X personalizado para mostrar solo horas
+    plot(NA, NA,
+         xlim  = c(fecha_inicio_intervalo, fecha_fin_intervalo),
+         ylim  = ylim_vals,
+         xlab  = "Hora",
+         ylab  = paste("Aceleracion en", col_name, "(m/s2)"),
+         main  = paste("Intervalo:", intervalo[1], "-", intervalo[2], "min"),
+         xaxt  = "n")
+    
+    # Eje X con etiquetas de hora
+    ticks <- seq(fecha_inicio_intervalo, fecha_fin_intervalo, length.out = 5)
+    axis(1, at = ticks, labels = format(ticks, "%H:%M:%S"), cex.axis = 0.7)
+    
+    # Añadir línea solo si hay datos
+    if (nrow(subset) > 0) {
+      lines(subset$Fecha, subset[[col_name]], col = "blue", lwd = 2)
+    }
+  }
+  
+  # Título principal usando el nombre de la columna
+  mtext(paste("Graficos por Intervalo -", col_name), outer = TRUE, cex = 1.5, font = 2)
+  
+  # Restaurar layout por defecto
+  par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+}
+
+```
+
+#### **Análisis De "aceleracion_1.csv":**
+
+**Testimonio:** La persona se desplazó desde su casa a la universidad, y las actividades realizadas por esta fueron caminar, estar en reposo y trasladarse en el bus de transporte intercampus.
+
+**Análisis de Aceleraciones**
+
+El análisis de los gráficos de aceleración correspondientes al primer conjunto de datos permite identificar cuatro momentos distintivos dentro del intervalo temporal registrado. A continuación, se describen las características particulares de cada uno de estos momentos:
+
+-   **Primer momento (0 - 11 minutos):** Este intervalo se caracteriza por la presencia de picos de aceleración pronunciados acompañados de un patrón oscilatorio en los tres ejes (X, Y, Z). Dichos patrones sugieren movimientos repetitivos e intensos, posiblemente asociados a una actividad física como caminar o correr.
+
+-   **Segundo momento (11 - 22 minutos):** Durante este periodo se observa un estado de reposo absoluto en los tres ejes de aceleración, evidenciado por la estabilidad de las gráficas en torno a un valor constante. Este comportamiento sugiere una fase de inactividad o permanencia en un medio de transporte en movimiento uniforme.
+
+-   **Tercer momento (22 - 46 minutos):** En esta etapa se registran aceleraciones suaves, intercaladas ocasionalmente con picos de mayor intensidad. Este patrón indica un desplazamiento menos uniforme, posiblemente debido a cambios de velocidad o movimientos eventuales, lo que podría estar asociado a un trayecto en vehículo con paradas o variaciones de ritmo.
+
+-   **Cuarto momento (46 - 50 minutos):** El último segmento temporal presenta características similares al primer momento, destacándose nuevamente los picos de aceleración pronunciados y el patrón oscilatorio característico. Este comportamiento podría estar relacionado con el retorno a una actividad física activa, como caminar tras el descenso de un vehículo.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+# Definir los intervalos
+intervalos <- list(
+  c(0, 11),   # Primer intervalo: 0 - 11 minutos
+  c(11, 22),  # Segundo intervalo: 11 - 22 minutos
+  c(22, 46),  # Tercer intervalo: 22 - 46 minutos
+  c(46, 50)   # Cuarto intervalo: 46 - 50 minutos
+)
+
+# Llamados modificados
+Graficar_intervalos(aceleracion_1, "AccX", intervalos)
+Graficar_intervalos(aceleracion_1, "AccY", intervalos)
+Graficar_intervalos(aceleracion_1, "AccZ", intervalos)
+Graficar_intervalos(aceleracion_1, "AccMag", intervalos)
+```
+
+#### **Análisis De "aceleracion_2.csv":**
+
+**Testimonio:** El sujeto realizó una caminata hasta la Facultad de Minas y desde allí tomó la ruta Intercampus hasta la sede El Volador. Allá realizó una caminata corta hasta su salón de clase.
+
+**AnÃ¡lisis de Aceleraciones:**
+
+Según la descripción de la actividad del sujeto y los gráficos de las aceleraciones, se pueden inferir los siguientes momentos dentro del conjunto de datos:
+
+-   **Primer momento (0 - 5 minutos):** Este intervalo se caracteriza por oscilaciones regulares y picos pronunciados en los tres ejes (X, Y, Z). Tales patrones son indicativos de un movimiento de marcha a pie, donde cada paso genera impulsos periódicos de aceleración vertical (eje Z) y balanceos corporales en los ejes horizontales (X e Y).
+
+-   **Segundo momento (5 - 38 minutos):** Durante esta fase las curvas de aceleración se aplanan y suavizan, mostrando escasa variabilidad y careciendo de picos rítmicos. Este comportamiento corresponde a un desplazamiento en vehículo con velocidad casi constante, en el cual solamente aparecen ondulaciones debidas a frenadas o curvas.
+
+-   **Tercer momento (38 - 41 minutos):** En el tramo final reaparecen patrones de oscilación periódica y picos de aceleración similares al primer momento. Esto sugiere el retorno a la marcha a pie tras la detención del vehículo, con la cadencia de pasos marcando nuevamente la señal en los tres ejes.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Definir los nuevos intervalos de tiempo (en minutos)
+intervalos_2 <- list(
+  c(0, 5),
+  c(5, 38),
+  c(38, 41)
+)
+
+# Llamados a Graficar_intervalos para aceleracion_3 con los nuevos intervalos
+Graficar_intervalos(aceleracion_2, "AccX", intervalos_2)
+Graficar_intervalos(aceleracion_2, "AccY", intervalos_2)
+Graficar_intervalos(aceleracion_2, "AccZ", intervalos_2)
+Graficar_intervalos(aceleracion_2, "AccMag", intervalos_2)
+
+```
+
+### Detección Automatizada De Patrones:
+
+#### Enfoque Heurístico:
+
+La función `clasificar_actividad` segmenta la serie temporal en ventanas de tamaño fijo y calcula, para cada una, medidas estadísticas básicas como la media y la desviación estándar de la aceleración. A partir de estos valores, asigna una categoría de actividad utilizando reglas definidas manualmente. Este procedimiento permite identificar patrones generales de comportamiento en los datos sin necesidad de entrenar un modelo de aprendizaje de maquina.
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| paged-print: false
+
+clasificar_actividad <- function(data, columna = "AccMag", ventana = 50) {
+  if (!"Fecha" %in% names(data)) {
+    stop("Debe existir una columna llamada 'Fecha' de tipo POSIXct")
+  }
+
+  data %>%
+    mutate(index = row_number()) %>%
+    group_by(grupo = floor((index - 1) / ventana)) %>%
+    summarise(
+      tiempo = Fecha[ceiling(n()/2)],
+      media = mean(.data[[columna]], na.rm = TRUE),
+      sd = sd(.data[[columna]], na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      actividad = case_when(
+        sd >= 0 & sd < 0.2 & media < 10 ~ "Reposo",
+        sd >= 0.2 & sd < 2 & media < 11 ~ "Viaje en bus",
+        sd >= 2 ~ "Caminar",
+        TRUE ~ "No clasificado"
+      )
+    )
+}
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| paged-print: false
+
+graficar_actividad <- function(clasificada, titulo = "Actividad") {
+  ggplot(clasificada, aes(x = tiempo, y = media, color = actividad)) +
+    geom_point(size = 1.5) +
+    scale_color_manual(values = c("Reposo" = "blue", "Caminar" = "green", "Viaje en bus" = "red", "No clasificado" = "gray")) +
+    scale_x_datetime(date_labels = "%H:%M", date_breaks = "10 min") +
+    labs(title = titulo, x = "Hora", y = "Media AccMag", color = "Actividad") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+
+library(gridExtra)
+library(cowplot)
+
+graficar_actividad_comparada_con_leyenda <- function(data1, data2) {
+  clasif1 <- clasificar_actividad(data1)
+  clasif2 <- clasificar_actividad(data2)
+
+  plot1 <- graficar_actividad(clasif1, "Aceleración 1") + theme(legend.position = "none")
+  plot2 <- graficar_actividad(clasif2, "Aceleración 2") + theme(legend.position = "none")
+
+  leyenda <- cowplot::get_legend(graficar_actividad(clasif1) + theme(legend.position = "bottom"))
+
+  cowplot::plot_grid(
+    cowplot::plot_grid(plot1, plot2, ncol = 2),
+    leyenda,
+    ncol = 1,
+    rel_heights = c(1, 0.1)
+  )
+}
+
+
+graficar_actividad_comparada_con_leyenda(aceleracion_1, aceleracion_2)
+```
+
+La función ha logrado resultados que pueden considerarse efectivos dada la naturaleza simple de su heurística, las condiciones logran segmentar correctamente las actividades de “caminata” pero presenta algunas confusiones al momento de segmentar las actividades de “reposo” y “viaje en bus” debido a las similitudes entre su media y desviación estándar en algunos momentos dentro de la señal. El equipo de trabajo propone a continuación un enfoque más refinado para abordar el problema de detección y clasificación:
+
+#### Enfoque No Supervisado:
+
+En esta sección se presentan los resultados de un enfoque automatizado para identificar cambios en los patrones de aceleración registrados por los dispositivos. El objetivo es segmentar la serie temporal en intervalos que reflejen diferentes tipos de comportamiento físico, sin necesidad de una revisión manual. Esta estrategia permite apoyar la interpretación de las actividades realizadas y facilita el análisis a gran escala de los datos recolectados.
+
+Dado que no se dispone de un conjunto de datos previamente etiquetado que relacione las mediciones de aceleración con actividades específicas, y considerando el esfuerzo que implica la anotación manual de eventos en una serie temporal extensa, se optó por un enfoque de aprendizaje no supervisado. Este tipo de métodos permite identificar patrones y agrupar comportamientos similares directamente desde los datos, sin necesidad de etiquetas previas.
+
+#### Modelo HMM + Ingeniería De Caracteristicas:
+
+Para la clasificación no supervisada de las actividades del sujeto a partir de la señal de aceleración, se implementó un Modelo Oculto de Markov (HMM, por sus siglas en inglés). Este modelo estadístico es adecuado para series temporales en las que se asume que el sistema transita entre un número finito de estados ocultos no observables directamente, pero que pueden inferirse a partir de observaciones ruidosas (en este caso, características derivadas de la aceleración).
+
+Se utilizó un HMM gaussiano con estados ocultos predefinidos, entrenado sobre un conjunto de características extraídas mediante una ventana deslizante, incluyendo medidas como la media, desviación estándar, y rango de la magnitud de aceleración, así como estadísticas por eje. Esta estrategia permitió capturar patrones dinámicos asociados a distintas actividades (como reposo, caminata o transporte), conservando la dependencia temporal de la señal. La segmentación resultante refleja transiciones entre comportamientos de forma coherente con los cambios esperados en la señal de aceleración.
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| paged-print: false
+
+segmentar_con_hmm <- function(df, n_states = 3, window_size = 3) {
+  # Verificar columna AccMag
+  if (!"AccMag" %in% names(df)) {
+    stop("El dataframe debe contener una columna 'AccMag' previamente calculada.")
+  }
+
+  # --- Enriquecimiento con características estadísticas ---
+  df$mean_AccMag  <- rollapply(df$AccMag, width = window_size, FUN = mean, fill = NA, align = "right")
+  df$std_AccMag   <- rollapply(df$AccMag, width = window_size, FUN = sd,   fill = NA, align = "right")
+  df$min_AccMag   <- rollapply(df$AccMag, width = window_size, FUN = min,  fill = NA, align = "right")
+  df$max_AccMag   <- rollapply(df$AccMag, width = window_size, FUN = max,  fill = NA, align = "right")
+  df$range_AccMag <- df$max_AccMag - df$min_AccMag
+
+  # Eliminar filas con NA introducidos por la ventana
+  df_hmm <- na.omit(df)
+
+  # --- Configurar y entrenar el modelo HMM ---
+  mod <- depmix(
+    list(mean_AccMag ~ 1, std_AccMag ~ 1),
+    data = df_hmm,
+    nstates = n_states,
+    family = list(gaussian(), gaussian())
+  )
+
+  set.seed(42)
+  fit_mod <- fit(mod, verbose = FALSE)
+
+  # --- Predecir secuencia de estados ---
+  post <- posterior(fit_mod)
+  df_hmm$EstadoHMM <- post$state
+
+  # --- Visualización ---
+  p <- ggplot(df_hmm, aes(x = Fecha, y = AccMag, color = factor(EstadoHMM))) +
+    geom_point(size = 1, alpha = 0.8) +
+    scale_color_brewer(palette = "Set1", name = "Estado HMM") +
+    labs(
+      title = paste("AccMag segmentada por HMM (", n_states, " estados)", sep = ""),
+      x = "Tiempo",
+      y = "Magnitud de Aceleración (AccMag)"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "right")
+
+  print(p)
+
+  return(df_hmm)
+}
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+resultado <- segmentar_con_hmm(aceleracion_1, n_states = 3)
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+
+resultado <- segmentar_con_hmm(aceleracion_2, n_states = 2)
+```
+
+La combinación de modelos ocultos de Markov (HMM) y técnicas de ingeniería de características estadísticas proporciona un rendimiento **decente** para la segmentación no supervisada de actividades a partir de datos de aceleración. Si bien el enfoque carece de una métrica de exactitud cuantificable, debido a la ausencia de etiquetas manuales, los resultados obtenidos se aproximan a lo que podría lograrse mediante una inspección visual **experta** de los datos.
+
+El modelo demuestra una capacidad razonable para diferenciar entre distintos patrones de comportamiento, como momentos de reposo, caminata o transporte. No obstante, **se identifican ciertas confusiones** en la clasificación de actividades, especialmente en el caso de movimientos intermitentes como los generados por el **frenado o la aceleración del bus**, que **a veces son clasificados erróneamente como caminata**.
+
+**Notese que al ser un enfoque no supervisado, los estados identificados por el modelo no tienen una etiqueta semántica predefinida**. Por tanto, es **imprescindible** que los **resultados sean interpretados** por un humano, quien puede dar sentido a los patrones según el contexto.
+
+En resumen, el modelo HMM ofrece una herramienta útil para la segmentación preliminar y exploratoria de actividad física, especialmente en escenarios donde el etiquetado manual no es viable.
+
+#### Modelo Isolation Tree:
+
+Se implementó un modelo de **Isolation Forest**, una técnica no supervisada ampliamente utilizada para la detección de anomalías. Este modelo se basa en la premisa de que los puntos atípicos (outliers) son más fáciles de aislar que los datos normales, ya que tienden a diferir notablemente del patrón general.
+
+La técnica fué aplicada sobre `AccMag`, dividiendo la señal en ventanas temporales fijas. A partir de cada ventana, se extrajeron características estadísticas simples como la media y la desviación estándar, las cuales fueron usadas como entrada del modelo.
+
+El modelo detecta posibles **cambios de actividad** al identificar ventanas que se comportan de forma significativamente diferente al resto. A través de un análisis visual previo de la señal, se observó que la **actividad de caminata** se caracterizaba por presentar los valores más altos y bajos de aceleración, mostrando también mayor variabilidad y movimientos bruscos en comparación con otras actividades. Esta característica distintiva motivó el uso del modelo **Isolation Forest**, dada su capacidad para resaltar anomalías o comportamientos atípicos, considerandolo así: capaz de detectar los intervalos en los que había presencia de caminatas en la señal.
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| paged-print: false
+
+detector_caminatas_iforest <- function(df, window_size = 50, contamination = 0.1) {
+  if (!all(c("timestamp", "AccMag", "Fecha") %in% names(df))) {
+    stop("El dataframe debe contener las columnas: timestamp, AccMag y Fecha.")
+  }
+
+  # --- Ventanas ---
+  n_windows <- floor(nrow(df) / window_size)
+  accmag_vals <- df$AccMag[1:(n_windows * window_size)]
+  timestamps <- df$timestamp[1:(n_windows * window_size)]
+
+  mag_matrix <- matrix(accmag_vals, ncol = window_size, byrow = TRUE)
+  features <- data.frame(
+    mean = rowMeans(mag_matrix),
+    std = apply(mag_matrix, 1, sd)
+  )
+
+  # --- Modelo Isolation Forest con isotree ---
+  iso_model <- isolation.forest(features, ntrees = 50, sample_size = "auto")
+  scores <- predict(iso_model, features, type = "score")
+  threshold <- quantile(scores, 1 - contamination)
+  labels <- ifelse(scores > threshold, -1, 1)
+
+  # Replicar etiquetas para cada muestra
+  labels_per_sample <- rep(labels, each = window_size)
+  df_plot <- df[1:length(labels_per_sample), ]
+  df_plot$anomaly <- labels_per_sample
+
+  # --- Gráfico ---
+  ggplot(df_plot, aes(x = Fecha, y = AccMag)) +
+  geom_line(color = "steelblue", alpha = 0.7) +
+  geom_point(
+    data = subset(df_plot, anomaly == -1),
+    aes(x = Fecha, y = AccMag),
+    color = "red", shape = 4, size = 1.5
+  ) +
+  labs(
+    title = "Detección de caminatas (Isolation Forest)",
+    x = "Tiempo",
+    y = "Magnitud de Aceleración (AccMag)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+}
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+detector_caminatas_iforest(aceleracion_1)
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| paged-print: false
+detector_caminatas_iforest(aceleracion_2)
+```
+
+El modelo Isolation Forest demostró un rendimiento considerablemente bueno para el propósito específico de detectar caminatas dentro de la señal de aceleración. La naturaleza de esta actividad, caracterizada por variaciones frecuentes y niveles relativamente altos de aceleración permite que el modelo la distinga del resto con efectividad.
+
+Visualmente se observa una clara correspondencia entre las detecciones del modelo y los segmentos conocidos de caminata. No obstante, es importante mencionar que se presentan algunas confusiones esporádicas, especialmente con eventos de aceleración o frenado brusco durante los trayectos en bus, los cuales pueden generar patrones de magnitud de aceleración similares a los producidos al caminar.
+
+A pesar de estas excepciones, el modelo cumple satisfactoriamente con su propósito, especialmente cuando se utiliza como una herramienta de apoyo para la identificación preliminar de caminatas en entornos no etiquetados.
+
+### Conclusiones:
+
+Los resultados obtenidos mediante el uso de modelos no supervisados como **Hidden Markov Models (HMM)** e **Isolation Forest** evidencian patrones recurrentes en la dinámica de aceleración del dispositivo. Particularmente, la segmentación de la magnitud de aceleración (AccMag) en múltiples estados ha permitido identificar fases diferenciadas del movimiento, mientras que el modelo de detección de anomalías ha mostrado una capacidad considerable para aislar eventos de caminata, especialmente durante periodos de actividad sostenida.
+
+La implementación de técnicas de aprendizaje de máquina para el reconocimiento de patrones en señales temporales representa un **paso lógico y necesario** en el desarrollo de sistemas más precisos y adaptativos de clasificación de actividad. Este enfoque permite una detección menos dependiente de reglas fijas y más sensible a variaciones sutiles en el comportamiento del sensor.
+
+Como línea futura, se deja planteada la necesidad de explorar **modelos supervisados**, que podrían entrenarse para distinguir caminatas, reposos, transporte en vehículo, entre otros. Esto incluye desde algoritmos clásicos como **k-NN, árboles de decisión o SVM**, hasta esquemas más avanzados como **redes neuronales recurrentes (RNNs)** o **modelos basados en atención**, que podrían capturar dependencias temporales complejas en la señal.
+
+Sin embargo, para llevar a cabo esta transición al aprendizaje supervisado, se requiere una **recolección de datos mucho más rica y exhaustiva**, con etiquetas fiables que permitan asociar cada ventana temporal con una clase de actividad específica. Esta labor, esencial para garantizar la validez del modelo, queda fuera del alcance de la presente actividad pero constituye un componente crucial para desarrollos posteriores.
+
+### **Bibliografía:**
+
+-   *Using an accelerometer for tracking distances*. (2022, 1 julio). Arduino Forum. <https://forum.arduino.cc/t/using-an-accelerometer-for-tracking-distances/1008483/4>
+
+-   Fang, S.-H., Liao, H.-H., Fei, Y.-X., Chen, K.-H., Huang, J.-W., Lu, Y.-D., & Tsao, Y. (2016). Transportation Modes Classification Using Sensors on Smartphones. *Sensors*, *16*(8), 1324. <https://doi.org/10.3390/s16081324>
+
+-   OpenAI. (2025). *ChatGPT* (versión GPT-4o) \[Modelo de lenguaje de IA\]. <https://chat.openai.com/>
+
+-   *scikit-learn: machine learning in Python — scikit-learn 0.16.1 documentation*. (s. f.). <https://scikit-learn.org/>
+
+-   *Isolation-based Outlier Detection — isotree  documentation*. (s. f.). <https://isotree.readthedocs.io/en/latest/>
+
+-   *depmixS4 documentation*. (s. f.). <https://rdrr.io/rforge/depmixS4/man/> :::
